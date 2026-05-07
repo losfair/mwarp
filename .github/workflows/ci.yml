@@ -72,6 +72,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
       - name: Validate release tag
         id: tag
         env:
