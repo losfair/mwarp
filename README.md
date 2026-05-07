@@ -11,15 +11,19 @@ What it does:
   upstream **SOCKS5** server inside the tunnel. WG packets can optionally be
   tunnelled over TCP using Mullvad-compatible `udp2tcp` framing for networks
   that block UDP;
-- creates a **fresh network namespace** anchored to a long-lived OS thread
-  (with a private mount namespace and a synthetic `/etc/resolv.conf`);
+- creates a sandboxed **WARP network namespace** for `warp-svc`/`warp-cli`
+  and a separate WARP-routed **egress namespace** for user traffic;
 - creates a **kernel TUN device**, hands the file descriptor to a
   **gVisor netstack** that terminates TCP/UDP, and moves the link into the
   netns where it is the default route;
 - forwards every accepted TCP/UDP flow on the netstack through the configured
   SOCKS5 server, dialing via WireGuard;
-- runs **`warp-svc` and `warp-cli`** as subprocesses inside the netns, so all
-  WARP egress lands on the TUN and is funneled out via SOCKS5+WG;
+- runs **`warp-svc` and `warp-cli`** as subprocesses inside the sandboxed
+  WARP namespace, so all WARP egress lands on the TUN and is funneled out via
+  SOCKS5+WG;
+- runs user-provided commands in the egress namespace with the host filesystem
+  mounted directly at `/`, except for a namespace-local `/etc/resolv.conf`
+  bind mount;
 - installs **nftables** rules (via netlink) inside the netns that drop any
   packet marked with `fwmark=1` unless it egresses via the `CloudflareWARP`
   device — this is the lock that keeps the `proxy` mode honest.
@@ -31,10 +35,10 @@ binary dependency is Cloudflare WARP itself (`warp-svc`, `warp-cli`).
 ## Subcommands
 
 ```
-mwarp run   [flags] -- COMMAND [ARGS...]    run COMMAND inside the WARP netns
+mwarp run   [flags] -- COMMAND [ARGS...]    run COMMAND through WARP
 mwarp proxy [flags]                         expose a SOCKS5 proxy whose
                                             upstream sockets dial from inside
-                                            the WARP netns
+                                            the WARP-routed egress netns
 ```
 
 ## Configuration
@@ -54,7 +58,6 @@ All flags can also be supplied as environment variables. The WireGuard
 | `--wg-over-tcp` | `WG_OVER_TCP` | `false` | tunnel WG datagrams over TCP using udp2tcp framing |
 | `--upstream-socks5` | `UPSTREAM_SOCKS5` | _required_ | SOCKS5 server reachable inside the WG tunnel |
 | `--tun-dev` | `TUN_DEV` | random | inside-netns TUN name |
-| `--tun-addr` | `TUN_ADDR` | `198.18.0.1/15` |  |
 | `--tun-mtu` | `TUN_MTU` | `1420` |  |
 | `--resolv-nameserver` | `RESOLV_NAMESERVER` | `8.8.8.8` |  |
 | `--warp-svc-cmd` | `WARP_SVC_CMD` | `warp-svc` | empty = skip |
@@ -76,4 +79,4 @@ All flags can also be supplied as environment variables. The WireGuard
 go build -o mwarp .
 ```
 
-Requires Linux. Run as root (CAP_NET_ADMIN, CAP_SYS_ADMIN).
+Requires Linux. Run as root (CAP_NET_ADMIN, CAP_SYS_ADMIN, CAP_MKNOD).

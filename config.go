@@ -22,9 +22,8 @@ type Config struct {
 
 	UpstreamSocks5 string
 
-	TunDev  string
-	TunAddr string
-	TunMTU  int
+	TunDev string
+	TunMTU int
 
 	NetnsResolvNameserver string
 
@@ -131,7 +130,6 @@ func registerCommonFlags(fs *flag.FlagSet, c *Config) {
 	fs.BoolVar(&c.WGOverTCP, "wg-over-tcp", envBool("WG_OVER_TCP", false), "Tunnel WG datagrams to the endpoint over TCP using udp2tcp framing (16-bit BE length prefix)")
 
 	fs.StringVar(&c.TunDev, "tun-dev", envOr("TUN_DEV", ""), "Kernel TUN device name (random if empty)")
-	fs.StringVar(&c.TunAddr, "tun-addr", envOr("TUN_ADDR", "198.18.0.1/15"), "TUN address inside netns (CIDR)")
 	fs.IntVar(&c.TunMTU, "tun-mtu", envInt("TUN_MTU", 1420), "TUN MTU")
 
 	fs.StringVar(&c.NetnsResolvNameserver, "resolv-nameserver", envOr("RESOLV_NAMESERVER", "8.8.8.8"), "Nameserver for /etc/resolv.conf inside netns")

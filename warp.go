@@ -105,13 +105,19 @@ func StartWarpSvc(ns *NetNS, raw string, logger *zap.Logger) (*exec.Cmd, error) 
 	var c *exec.Cmd
 	var startErr error
 	err = ns.RunOnAnchor(func() error {
+		warpSvcCaps := capMask(unix.CAP_NET_ADMIN, unix.CAP_NET_BIND_SERVICE)
+		if err := restrictCurrentThreadCaps(warpSvcCaps); err != nil {
+			return err
+		}
 		c = exec.Command(parts[0], parts[1:]...)
 		c.Stdin = devNull
 		c.Stdout = stdoutW
 		c.Stderr = stderrW
+		c.Env = warpCommandEnv()
 		c.SysProcAttr = &syscall.SysProcAttr{
-			Pdeathsig: unix.SIGKILL,
-			Setpgid:   true,
+			Pdeathsig:   unix.SIGKILL,
+			Setpgid:     true,
+			AmbientCaps: []uintptr{unix.CAP_NET_ADMIN, unix.CAP_NET_BIND_SERVICE},
 		}
 		startErr = c.Start()
 		return startErr
@@ -160,6 +166,7 @@ func RegisterWarp(ns *NetNS, cli string, acceptTOS bool, retries, delaySeconds i
 			cmd := exec.Command(cli, args...)
 			cmd.Stdout = &stdout
 			cmd.Stderr = &stderr
+			cmd.Env = warpCommandEnv()
 			runErr = cmd.Run()
 			return runErr
 		})
@@ -211,6 +218,7 @@ func ConnectWarp(ns *NetNS, cli string, acceptTOS bool, retries, delaySeconds in
 			cmd := exec.Command(cli, args...)
 			cmd.Stdout = &stdout
 			cmd.Stderr = &stderr
+			cmd.Env = warpCommandEnv()
 			runErr = cmd.Run()
 			return runErr
 		})

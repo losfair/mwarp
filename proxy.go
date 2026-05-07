@@ -164,7 +164,7 @@ func dialInNS(ctx context.Context, ns *NetNS, dst string) (net.Conn, error) {
 	resCh := make(chan dialResult, 1)
 
 	go func() {
-		err := ns.RunNet(func() error {
+		err := ns.Run(func() error {
 			ips, err := resolveInNS(ctx, host)
 			if err != nil {
 				resCh <- dialResult{err: fmt.Errorf("resolve %s: %w", host, err)}

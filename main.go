@@ -16,10 +16,10 @@ import (
 const usage = `mwarp — single-binary userspace WireGuard + Cloudflare WARP plumbing
 
 Usage:
-  mwarp run   [flags] -- COMMAND [ARGS...]    run COMMAND inside the WARP netns
+  mwarp run   [flags] -- COMMAND [ARGS...]    run COMMAND through WARP
   mwarp proxy [flags]                         expose a SOCKS5 proxy whose
                                               upstream sockets dial from inside
-                                              the WARP netns
+                                              the WARP-routed egress netns
 
 All flags can also be set via environment variables (see README/source).
 The WireGuard private key is taken from $WG_PRIVATE_KEY only.
@@ -188,6 +188,12 @@ func setupAll(ctx context.Context, cfg *Config, logger *zap.Logger) (*State, err
 	state.WG = wg
 
 	var warpExtraBinds []BindMount
+	warpCommandBinds, err := prepareWarpCommandBinds(cfg)
+	if err != nil {
+		state.Close()
+		return nil, err
+	}
+	warpExtraBinds = append(warpExtraBinds, warpCommandBinds...)
 	if cfg.WarpStateDir != "" {
 		// Persistent registration/settings — bind only if the operator
 		// asked for it. Default is ephemeral (re-registered each run).
@@ -233,7 +239,7 @@ func setupAll(ctx context.Context, cfg *Config, logger *zap.Logger) (*State, err
 	state.Stack = stack
 
 	if err := warpNS.Run(func() error {
-		return configureLinkInNS(tun.Name, cfg.TunAddr, cfg.TunMTU, logger)
+		return configureLinkInNS(tun.Name, tunAddrCIDR, cfg.TunMTU, logger)
 	}); err != nil {
 		state.Close()
 		return nil, fmt.Errorf("configure warp netns link: %w", err)
@@ -284,7 +290,8 @@ func setupAll(ctx context.Context, cfg *Config, logger *zap.Logger) (*State, err
 
 	// Bring up a second netns whose only off-box path is back through the
 	// warp netns (and from there, via warp-svc's CloudflareWARP TUN).
-	// User commands and the SOCKS5 proxy run there.
+	// User commands run there with the host filesystem still mounted at /;
+	// only /etc/resolv.conf is overlaid in the private mount namespace.
 	egress, err := CreateEgressNS(warpNS, cfg.NetnsResolvNameserver, cfg.WarpIface, logger)
 	if err != nil {
 		state.Close()
@@ -294,4 +301,3 @@ func setupAll(ctx context.Context, cfg *Config, logger *zap.Logger) (*State, err
 
 	return state, nil
 }
-

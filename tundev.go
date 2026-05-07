@@ -8,8 +8,8 @@ import (
 	"os"
 	"unsafe"
 
-	"go.uber.org/zap"
 	"github.com/vishvananda/netlink"
+	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
 )
 
@@ -19,6 +19,7 @@ const (
 	cIFF_NO_PI  = 0x1000
 	cTUNSETIFF  = 0x400454ca
 	cTUNSETPERS = 0x400454cb
+	tunAddrCIDR = "169.254.41.1/32"
 )
 
 type ifReq struct {

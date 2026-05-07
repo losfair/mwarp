@@ -19,18 +19,30 @@ type NetNS struct {
 
 	logger *zap.Logger
 
-	stagingDir string // host-side placeholder where we mount our private tmpfs
+	stagingDir string // host-side scratch dir for sandbox tmpfs or resolv overlay
 
 	taskCh chan func()
 	stopCh chan struct{}
 	wg     sync.WaitGroup
 }
 
-// NetNSOptions describes how to populate the sandboxed root that the netns
-// anchor pivots into. The root is always a fresh tmpfs containing only:
+// NetNSRootMode describes the mount namespace root made visible to processes
+// spawned inside a NetNS.
+type NetNSRootMode int
+
+const (
+	// NetNSRootSandbox pivots the namespace into a synthetic tmpfs root.
+	NetNSRootSandbox NetNSRootMode = iota
+	// NetNSRootHost keeps the host filesystem mounted at / and only overlays
+	// the namespace-local /etc/resolv.conf.
+	NetNSRootHost
+)
+
+// NetNSOptions describes how to populate the root visible inside the netns.
+// By default, the anchor pivots into a fresh tmpfs containing only:
 //
 //   - read-only bind mounts of host /usr, /sys, plus a fresh procfs;
-//   - a read-write bind mount of host /dev;
+//   - minimal /dev character devices needed by warp;
 //   - top-level symlinks /bin /sbin /lib /lib64 → /usr/...;
 //   - empty writable /etc, /tmp, /var, /run, /root, /home;
 //   - /etc/resolv.conf seeded with the configured nameserver.
@@ -42,7 +54,12 @@ type NetNS struct {
 // ExtraBinds is for arbitrary paths outside /etc; useful for sharing state
 // dirs (e.g. /var/lib/cloudflare-warp where warp-svc keeps its device
 // registration) so the namespace isn't a fully fresh world every run.
+//
+// If RootMode is NetNSRootHost, ExtraEtcBinds and ExtraBinds are ignored. The
+// host filesystem remains visible directly, with only /etc/resolv.conf
+// overlaid by a namespace-private bind mount.
 type NetNSOptions struct {
+	RootMode      NetNSRootMode
 	Nameserver    string
 	ExtraEtcBinds []string
 	ExtraBinds    []BindMount
@@ -100,7 +117,12 @@ func CreateNetNS(opts NetNSOptions, logger *zap.Logger) (*NetNS, error) {
 			ready <- readyMsg{err: fmt.Errorf("mount private root: %w", err)}
 			return
 		}
-		if err := setupSandboxRoot(stagingDir, opts); err != nil {
+		if opts.RootMode == NetNSRootHost {
+			if err := setupHostRootResolvOverlay(stagingDir, opts); err != nil {
+				ready <- readyMsg{err: err}
+				return
+			}
+		} else if err := setupSandboxRoot(stagingDir, opts); err != nil {
 			ready <- readyMsg{err: err}
 			return
 		}
@@ -148,6 +170,30 @@ func CreateNetNS(opts NetNSOptions, logger *zap.Logger) (*NetNS, error) {
 	return n, nil
 }
 
+// setupHostRootResolvOverlay runs inside the anchor thread after CLONE_NEWNS
+// and MS_PRIVATE have been applied. It leaves the host filesystem mounted at
+// /, but bind-mounts a generated resolv.conf over /etc/resolv.conf inside
+// this private mount namespace.
+func setupHostRootResolvOverlay(stagingDir string, opts NetNSOptions) error {
+	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir staging: %w", err)
+	}
+	resolvPath := stagingDir + "/resolv.conf"
+	if err := os.WriteFile(resolvPath, []byte("nameserver "+opts.Nameserver+"\n"), 0o644); err != nil {
+		return fmt.Errorf("write resolv overlay: %w", err)
+	}
+	if _, err := os.Stat("/etc/resolv.conf"); err != nil {
+		return fmt.Errorf("stat /etc/resolv.conf: %w", err)
+	}
+	if err := unix.Mount(resolvPath, "/etc/resolv.conf", "", unix.MS_BIND, ""); err != nil {
+		return fmt.Errorf("bind resolv overlay: %w", err)
+	}
+	if err := unix.Mount("", "/etc/resolv.conf", "", unix.MS_BIND|unix.MS_REMOUNT|unix.MS_RDONLY, ""); err != nil {
+		return fmt.Errorf("remount resolv overlay ro: %w", err)
+	}
+	return nil
+}
+
 // setupSandboxRoot runs inside the anchor thread, after CLONE_NEWNS and
 // MS_PRIVATE have been applied. It builds a tmpfs at stagingDir, populates
 // it with the minimal layout described on NetNSOptions, then pivots the
@@ -189,15 +235,16 @@ func setupSandboxRoot(stagingDir string, opts NetNSOptions) error {
 		return fmt.Errorf("remount /usr ro: %w", err)
 	}
 
-	// /dev — read-write bind, recursive (carries /dev/pts, /dev/shm).
-	if err := unix.Mount("/dev", stagingDir+"/dev", "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
-		return fmt.Errorf("bind /dev: %w", err)
+	// /dev — do not expose the host device tree to warp. Create only the
+	// character devices it needs.
+	if err := setupMinimalDev(stagingDir); err != nil {
+		return err
 	}
 
 	// /proc — fresh procfs. The new netns gets a procfs that reflects
 	// itself (e.g. /proc/net/* is the netns's network state).
-	if err := unix.Mount("proc", stagingDir+"/proc", "proc", 0, ""); err != nil {
-		return fmt.Errorf("mount /proc: %w", err)
+	if err := unix.Mount("/proc", stagingDir+"/proc", "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
+		return fmt.Errorf("bind /proc: %w", err)
 	}
 
 	// /sys — bind from host, read-only. (Mounting fresh sysfs would
@@ -261,6 +308,50 @@ func setupSandboxRoot(stagingDir string, opts NetNSOptions) error {
 	}
 	if err := os.Remove("/.put_old"); err != nil {
 		return fmt.Errorf("remove .put_old: %w", err)
+	}
+	return nil
+}
+
+func setupMinimalDev(stagingDir string) error {
+	if err := os.MkdirAll(stagingDir+"/dev/net", 0o755); err != nil {
+		return fmt.Errorf("mkdir /dev/net: %w", err)
+	}
+	for _, node := range []struct {
+		path         string
+		major, minor uint32
+		mode         os.FileMode
+	}{
+		{"/dev/null", 1, 3, 0o666},
+		{"/dev/zero", 1, 5, 0o666},
+		{"/dev/random", 1, 8, 0o666},
+		{"/dev/urandom", 1, 9, 0o666},
+		{"/dev/net/tun", 10, 200, 0o666},
+	} {
+		if err := createCharDevice(stagingDir+node.path, node.mode, node.major, node.minor); err != nil {
+			return err
+		}
+	}
+	for _, link := range []struct{ from, to string }{
+		{"/dev/stdin", "/proc/self/fd/0"},
+		{"/dev/stdout", "/proc/self/fd/1"},
+		{"/dev/stderr", "/proc/self/fd/2"},
+	} {
+		if err := os.Symlink(link.to, stagingDir+link.from); err != nil {
+			return fmt.Errorf("symlink %s: %w", link.from, err)
+		}
+	}
+	return nil
+}
+
+func createCharDevice(path string, mode os.FileMode, major, minor uint32) error {
+	dev := int(unix.Mkdev(major, minor))
+	if err := unix.Mknod(path, unix.S_IFCHR|uint32(mode.Perm()), dev); err != nil {
+		if !os.IsExist(err) {
+			return fmt.Errorf("mknod %s: %w", path, err)
+		}
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		return fmt.Errorf("chmod %s: %w", path, err)
 	}
 	return nil
 }
