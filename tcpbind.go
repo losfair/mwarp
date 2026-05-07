@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -25,19 +26,29 @@ import (
 // then Open() — that lifecycle is supported.
 type TCPBind struct {
 	address     string
+	dialer      Dialer
 	dialTimeout time.Duration
 
 	mu      sync.Mutex
-	open    bool        // true between Open() and Close()
-	conn    net.Conn    // current TCP conn; nil if not connected yet or torn down
-	connGen uint64      // increments on each (re)dial; lets retries skip if someone else already reconnected
+	open    bool     // true between Open() and Close()
+	conn    net.Conn // current TCP conn; nil if not connected yet or torn down
+	connGen uint64   // increments on each (re)dial; lets retries skip if someone else already reconnected
 }
 
 func NewTCPBind(address string) *TCPBind {
 	return &TCPBind{
 		address:     address,
+		dialer:      &net.Dialer{},
 		dialTimeout: 15 * time.Second,
 	}
+}
+
+func NewTCPBindWithDialer(address string, dialer Dialer) *TCPBind {
+	b := NewTCPBind(address)
+	if dialer != nil {
+		b.dialer = dialer
+	}
+	return b
 }
 
 func (b *TCPBind) Open(_ uint16) ([]conn.ReceiveFunc, uint16, error) {
@@ -98,10 +109,13 @@ func (b *TCPBind) dial(staleGen uint64) error {
 		b.conn = nil
 	}
 	addr := b.address
+	dialer := b.dialer
 	timeout := b.dialTimeout
 	b.mu.Unlock()
 
-	c, err := net.DialTimeout("tcp", addr, timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	c, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return err
 	}

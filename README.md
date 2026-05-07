@@ -1,6 +1,6 @@
 # mwarp
 
-Single Linux binary that stacks Cloudflare WARP on top of an upstream
+Single Linux binary that stacks Cloudflare WARP on top of an inner
 WireGuard + SOCKS5 path, so traffic exits via WARP while the WARP daemon's own
 egress is forced through the WireGuard tunnel.
 
@@ -8,7 +8,7 @@ What it does:
 
 - speaks **userspace WireGuard** (no `wg-quick`, no kernel module) to the
   configured peer, exposing a netstack-backed dialer that can reach the
-  upstream **SOCKS5** server inside the tunnel. WG packets can optionally be
+  inner **SOCKS5** server inside the tunnel. WG packets can optionally be
   tunnelled over TCP using Mullvad-compatible `udp2tcp` framing for networks
   that block UDP;
 - creates a sandboxed **WARP network namespace** for `warp-svc`/`warp-cli`
@@ -56,7 +56,8 @@ All flags can also be supplied as environment variables. The WireGuard
 | `--wg-mtu` | `WG_MTU` | `1280` |  |
 | `--wg-persistent-keepalive` | `WG_PERSISTENT_KEEPALIVE` | `25` |  |
 | `--wg-over-tcp` | `WG_OVER_TCP` | `false` | tunnel WG datagrams over TCP using udp2tcp framing |
-| `--upstream-socks5` | `UPSTREAM_SOCKS5` | _required_ | SOCKS5 server reachable inside the WG tunnel |
+| `--outer-socks5` | `OUTER_SOCKS5` |  | SOCKS5 server used to reach the WG endpoint before the tunnel is up |
+| `--inner-socks5` | `INNER_SOCKS5` | _required_ | SOCKS5 server reachable inside the WG tunnel |
 | `--tun-dev` | `TUN_DEV` | random | inside-netns TUN name |
 | `--tun-mtu` | `TUN_MTU` | `1420` |  |
 | `--resolv-nameserver` | `RESOLV_NAMESERVER` | `8.8.8.8` |  |

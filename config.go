@@ -19,8 +19,9 @@ type Config struct {
 	WGMTU          int
 	WGPersistentKA int
 	WGOverTCP      bool
+	OuterSocks5    string
 
-	UpstreamSocks5 string
+	InnerSocks5 string
 
 	TunDev string
 	TunMTU int
@@ -120,7 +121,8 @@ func registerCommonFlags(fs *flag.FlagSet, c *Config) {
 	fs.StringVar(&c.WGEndpoint, "wg-endpoint", envOr("WG_ENDPOINT", ""), "WireGuard peer endpoint host:port")
 	fs.StringVar(&c.WGPublicKey, "wg-public-key", envOr("WG_PUBLIC_KEY", ""), "WireGuard peer public key (base64)")
 	fs.StringVar(&c.WGPresharedKey, "wg-preshared-key", envOr("WG_PRESHARED_KEY", ""), "WireGuard preshared key (optional, base64)")
-	fs.StringVar(&c.UpstreamSocks5, "upstream-socks5", envOr("UPSTREAM_SOCKS5", ""), "Upstream SOCKS5 server inside the WG tunnel (host:port)")
+	fs.StringVar(&c.InnerSocks5, "inner-socks5", envOr("INNER_SOCKS5", ""), "Inner SOCKS5 server reachable inside the WG tunnel (host:port)")
+	fs.StringVar(&c.OuterSocks5, "outer-socks5", envOr("OUTER_SOCKS5", ""), "Outer SOCKS5 server used to reach the WG endpoint before the tunnel is up (host:port)")
 
 	fs.StringVar(&c.wgAddrRaw, "wg-address", envOr("WG_ADDRESS", ""), "Comma-separated WireGuard local addresses (CIDR or bare addr)")
 	fs.StringVar(&c.wgAllowedRaw, "wg-allowed-ips", envOr("WG_ALLOWED_IPS", "0.0.0.0/0,::/0"), "Comma-separated peer allowed-IPs CIDRs")
@@ -164,8 +166,11 @@ func (c *Config) finalize() error {
 	if c.WGPublicKey == "" {
 		return fmt.Errorf("--wg-public-key / WG_PUBLIC_KEY is required")
 	}
-	if c.UpstreamSocks5 == "" {
-		return fmt.Errorf("--upstream-socks5 / UPSTREAM_SOCKS5 is required")
+	if err := validateOuterSocks5(c.OuterSocks5); err != nil {
+		return err
+	}
+	if c.InnerSocks5 == "" {
+		return fmt.Errorf("--inner-socks5 / INNER_SOCKS5 is required")
 	}
 	if len(c.WGAddress) == 0 {
 		return fmt.Errorf("--wg-address / WG_ADDRESS is required (e.g. 10.66.123.45/32)")

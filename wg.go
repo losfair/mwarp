@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"strconv"
 	"strings"
 
 	"go.uber.org/zap"
@@ -38,10 +39,10 @@ func decodeKey(k string) (string, error) {
 // resolveEndpoint resolves a host:port endpoint via the system resolver
 // (since this dial happens before the WG tunnel is up).
 func resolveEndpoint(ep string) (string, error) {
-	host, port, err := net.SplitHostPort(ep)
-	if err != nil {
-		return "", fmt.Errorf("invalid endpoint %q: %w", ep, err)
+	if _, err := validateEndpoint(ep); err != nil {
+		return "", err
 	}
+	host, port, _ := net.SplitHostPort(ep)
 	if ip := net.ParseIP(host); ip != nil {
 		return ep, nil
 	}
@@ -53,6 +54,20 @@ func resolveEndpoint(ep string) (string, error) {
 		return "", fmt.Errorf("no addresses for %s", host)
 	}
 	return net.JoinHostPort(addrs[0], port), nil
+}
+
+func validateEndpoint(ep string) (string, error) {
+	host, port, err := net.SplitHostPort(ep)
+	if err != nil {
+		return "", fmt.Errorf("invalid endpoint %q: %w", ep, err)
+	}
+	if host == "" {
+		return "", fmt.Errorf("invalid endpoint %q: missing host", ep)
+	}
+	if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+		return "", fmt.Errorf("invalid endpoint %q: invalid port %q: %w", ep, port, err)
+	}
+	return ep, nil
 }
 
 func StartWireGuard(c *Config, logger *zap.Logger) (*WGClient, error) {
@@ -72,7 +87,9 @@ func StartWireGuard(c *Config, logger *zap.Logger) (*WGClient, error) {
 	}
 
 	var endpoint string
-	if c.WGOverTCP {
+	if c.OuterSocks5 != "" {
+		endpoint, err = validateEndpoint(c.WGEndpoint)
+	} else if c.WGOverTCP {
 		endpoint, err = resolveTCPEndpoint(c.WGEndpoint)
 	} else {
 		endpoint, err = resolveEndpoint(c.WGEndpoint)
@@ -110,7 +127,13 @@ func StartWireGuard(c *Config, logger *zap.Logger) (*WGClient, error) {
 
 	var bind conn.Bind
 	if c.WGOverTCP {
-		bind = NewTCPBind(endpoint)
+		if c.OuterSocks5 != "" {
+			bind = NewTCPBindWithDialer(endpoint, newOuterSocks5Client(c.OuterSocks5))
+		} else {
+			bind = NewTCPBind(endpoint)
+		}
+	} else if c.OuterSocks5 != "" {
+		bind = NewSocks5Bind(newOuterSocks5Client(c.OuterSocks5))
 	} else {
 		bind = conn.NewDefaultBind()
 	}
@@ -129,9 +152,13 @@ func StartWireGuard(c *Config, logger *zap.Logger) (*WGClient, error) {
 	if c.WGOverTCP {
 		transport = "tcp (udp2tcp)"
 	}
+	if c.OuterSocks5 != "" {
+		transport += " over socks5"
+	}
 	logger.Info("wireguard up",
 		zap.String("endpoint", endpoint),
 		zap.String("transport", transport),
+		zap.String("outer_socks5", c.OuterSocks5),
 		zap.Any("addresses", c.WGAddress),
 		zap.Int("mtu", c.WGMTU),
 	)

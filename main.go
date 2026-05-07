@@ -228,7 +228,7 @@ func setupAll(ctx context.Context, cfg *Config, logger *zap.Logger) (*State, err
 	}
 
 	socks := &Socks5Client{
-		Server: cfg.UpstreamSocks5,
+		Server: cfg.InnerSocks5,
 		Base:   wg.Net,
 	}
 	stack, err := NewNSStack(tun.File, cfg.TunMTU, socks, logger)

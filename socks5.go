@@ -13,14 +13,14 @@ import (
 )
 
 const (
-	socks5Version = 0x05
-	socks5MethodNoAuth = 0x00
+	socks5Version         = 0x05
+	socks5MethodNoAuth    = 0x00
 	socks5CmdConnect      = 0x01
 	socks5CmdUDPAssociate = 0x03
-	socks5AddrIPv4   = 0x01
-	socks5AddrDomain = 0x03
-	socks5AddrIPv6   = 0x04
-	socks5RepSuccess = 0x00
+	socks5AddrIPv4        = 0x01
+	socks5AddrDomain      = 0x03
+	socks5AddrIPv6        = 0x04
+	socks5RepSuccess      = 0x00
 )
 
 // Dialer is the underlying transport used to reach the SOCKS5 server itself.
@@ -219,19 +219,33 @@ func (s *Socks5UDPSession) RemoteAddr() net.Addr { return s.conn.RemoteAddr() }
 
 // WriteTo sends a UDP datagram to dst via the relay.
 func (s *Socks5UDPSession) WriteTo(p []byte, dst netip.AddrPort) (int, error) {
+	return s.WriteToHost(p, dst.Addr().String(), dst.Port())
+}
+
+// WriteToHost sends a UDP datagram to dst via the relay. The host may be an IP
+// literal or a domain name.
+func (s *Socks5UDPSession) WriteToHost(p []byte, host string, port uint16) (int, error) {
 	hdr := make([]byte, 0, 22+len(p))
 	hdr = append(hdr, 0x00, 0x00, 0x00) // RSV, RSV, FRAG
-	if dst.Addr().Is4() {
-		hdr = append(hdr, socks5AddrIPv4)
-		v4 := dst.Addr().As4()
-		hdr = append(hdr, v4[:]...)
+	if ip, err := netip.ParseAddr(host); err == nil {
+		if ip.Is4() {
+			hdr = append(hdr, socks5AddrIPv4)
+			v4 := ip.As4()
+			hdr = append(hdr, v4[:]...)
+		} else {
+			hdr = append(hdr, socks5AddrIPv6)
+			v6 := ip.As16()
+			hdr = append(hdr, v6[:]...)
+		}
 	} else {
-		hdr = append(hdr, socks5AddrIPv6)
-		v6 := dst.Addr().As16()
-		hdr = append(hdr, v6[:]...)
+		if len(host) > 255 {
+			return 0, fmt.Errorf("socks5: domain too long")
+		}
+		hdr = append(hdr, socks5AddrDomain, byte(len(host)))
+		hdr = append(hdr, []byte(host)...)
 	}
 	var pp [2]byte
-	binary.BigEndian.PutUint16(pp[:], dst.Port())
+	binary.BigEndian.PutUint16(pp[:], port)
 	hdr = append(hdr, pp[:]...)
 	hdr = append(hdr, p...)
 	n, err := s.conn.Write(hdr)
