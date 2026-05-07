@@ -1,78 +1,148 @@
 # mwarp
 
-Single Linux binary that stacks Cloudflare WARP on top of an inner
-WireGuard + SOCKS5 path, so traffic exits via WARP while the WARP daemon's own
-egress is forced through the WireGuard tunnel.
+`mwarp` is a Linux-only helper that runs Cloudflare WARP behind an inner
+WireGuard + SOCKS5 path, then runs a command or exposes a SOCKS5 proxy whose
+traffic exits through WARP.
 
-What it does:
+The important property is the traffic shape:
 
-- speaks **userspace WireGuard** (no `wg-quick`, no kernel module) to the
-  configured peer, exposing a netstack-backed dialer that can reach the
-  inner **SOCKS5** server inside the tunnel. WG packets can optionally be
-  tunnelled over TCP using Mullvad-compatible `udp2tcp` framing for networks
-  that block UDP;
-- creates a sandboxed **WARP network namespace** for `warp-svc`/`warp-cli`
-  and a separate WARP-routed **egress namespace** for user traffic;
-- creates a **kernel TUN device**, hands the file descriptor to a
-  **gVisor netstack** that terminates TCP/UDP, and moves the link into the
-  netns where it is the default route;
-- forwards every accepted TCP/UDP flow on the netstack through the configured
-  SOCKS5 server, dialing via WireGuard;
-- runs **`warp-svc` and `warp-cli`** as subprocesses inside the sandboxed
-  WARP namespace, so all WARP egress lands on the TUN and is funneled out via
-  SOCKS5+WG;
-- runs user-provided commands in the egress namespace with the host filesystem
-  mounted directly at `/`, except for a namespace-local `/etc/resolv.conf`
-  bind mount;
-- installs **nftables** rules (via netlink) inside the netns that drop any
-  packet marked with `fwmark=1` unless it egresses via the `CloudflareWARP`
-  device — this is the lock that keeps the `proxy` mode honest.
+```text
+user command / parent SOCKS5 listener
+  -> egress network namespace
+  -> CloudflareWARP interface in WARP namespace
+  -> warp-svc traffic
+  -> kernel TUN handled by gVisor netstack
+  -> inner SOCKS5 server
+  -> userspace WireGuard tunnel
+  -> WireGuard peer
+```
 
-All netns operations use thread-pinned goroutines (`runtime.LockOSThread` +
-`unix.Setns`), not `ip` / `nsenter` / `nft` subprocesses. The only external
-binary dependency is Cloudflare WARP itself (`warp-svc`, `warp-cli`).
+The WARP daemon's own network traffic is forced through the inner SOCKS5
+server reachable over WireGuard. User traffic is placed in a second namespace
+whose only default route points back through the WARP namespace.
+
+## What It Does
+
+- Starts a userspace WireGuard device with `wireguard-go`'s netstack TUN.
+  There is no `wg-quick` dependency and no kernel WireGuard interface for the
+  inner tunnel.
+- Optionally reaches the WireGuard peer through an outer no-auth SOCKS5 proxy.
+  UDP WireGuard uses SOCKS5 `UDP ASSOCIATE`; `--wg-over-tcp` uses a
+  Mullvad-compatible 16-bit big-endian udp-over-tcp frame stream, optionally
+  through the same outer SOCKS5 proxy.
+- Creates a sandboxed WARP namespace with a minimal tmpfs root. It bind-mounts
+  only the resolved `warp-svc` and `warp-cli` executables, `/usr`, `/sys`,
+  `/proc`, minimal `/dev` nodes, generated DNS config, and optional WARP state.
+- Creates a kernel TUN device in the WARP namespace and attaches it to a
+  gVisor netstack in the parent process. The netstack accepts TCP and UDP flows
+  from WARP and forwards them through the inner SOCKS5 server over WireGuard.
+- Starts `warp-svc`, registers WARP with `warp-cli registration new`, runs
+  `warp-cli connect`, and waits until the default route for `1.1.1.1` uses the
+  configured WARP interface.
+- Creates a second egress namespace with the host filesystem still mounted at
+  `/`, except for a namespace-local read-only `/etc/resolv.conf`.
+- Connects the WARP and egress namespaces with a veth pair. The egress
+  namespace gets IPv4 and IPv6 default routes through that pair.
+- Installs nftables rules inside the WARP namespace to drop forwarded egress
+  traffic unless it leaves via the WARP interface, and to masquerade forwarded
+  IPv4/IPv6 traffic going out through WARP.
+- Implements a parent-namespace no-auth SOCKS5 server in `proxy` mode. Accepted
+  TCP connections are dialed from inside the egress namespace, so proxy
+  upstream traffic follows the WARP route.
+
+All namespace work is done with netlink, nftables netlink, `setns`, and
+thread-pinned goroutines. `mwarp` does not shell out to `ip`, `nsenter`, or
+`nft`; the external runtime dependency is Cloudflare WARP itself
+(`warp-svc` and `warp-cli`).
 
 ## Subcommands
 
+```sh
+mwarp run   [flags] -- COMMAND [ARGS...]
+mwarp proxy [flags]
 ```
-mwarp run   [flags] -- COMMAND [ARGS...]    run COMMAND through WARP
-mwarp proxy [flags]                         expose a SOCKS5 proxy whose
-                                            upstream sockets dial from inside
-                                            the WARP-routed egress netns
-```
+
+`run` creates the namespaces, brings up WireGuard and WARP, then executes the
+command inside the egress namespace. It attaches the current stdio and returns
+the child process exit code.
+
+`proxy` creates the same plumbing, then listens for SOCKS5 clients in the
+parent namespace. Only no-auth SOCKS5 `CONNECT` is supported by the listener.
+Upstream sockets are opened from inside the egress namespace.
 
 ## Configuration
 
-All flags can also be supplied as environment variables. The WireGuard
-**private key** is taken from `$WG_PRIVATE_KEY` only — never as a flag.
+All flags can also be supplied as environment variables. `WG_PRIVATE_KEY` is
+environment-only and is required.
 
 | Flag | Env | Default | Notes |
 | ---- | --- | ------- | ----- |
-| `--wg-endpoint` | `WG_ENDPOINT` | _required_ | `host:port` |
-| `--wg-public-key` | `WG_PUBLIC_KEY` | _required_ | base64 |
-| `--wg-preshared-key` | `WG_PRESHARED_KEY` |  | base64, optional |
-| `--wg-address` | `WG_ADDRESS` | _required_ | comma-separated IPs/CIDRs |
-| `--wg-allowed-ips` | `WG_ALLOWED_IPS` | `0.0.0.0/0,::/0` | comma-separated CIDRs |
-| `--wg-mtu` | `WG_MTU` | `1280` |  |
-| `--wg-persistent-keepalive` | `WG_PERSISTENT_KEEPALIVE` | `25` |  |
-| `--wg-over-tcp` | `WG_OVER_TCP` | `false` | tunnel WG datagrams over TCP using udp2tcp framing |
-| `--outer-socks5` | `OUTER_SOCKS5` |  | SOCKS5 server used to reach the WG endpoint before the tunnel is up |
-| `--inner-socks5` | `INNER_SOCKS5` | _required_ | SOCKS5 server reachable inside the WG tunnel |
-| `--tun-dev` | `TUN_DEV` | random | inside-netns TUN name |
-| `--tun-mtu` | `TUN_MTU` | `1420` |  |
-| `--resolv-nameserver` | `RESOLV_NAMESERVER` | `8.8.8.8` |  |
-| `--warp-svc-cmd` | `WARP_SVC_CMD` | `warp-svc` | empty = skip |
-| `--warp-cli` | `WARP_CLI` | `warp-cli` | empty = skip connect |
-| `--warp-accept-tos` | `WARP_ACCEPT_TOS` | `true` |  |
-| `--warp-connect-retries` | `WARP_CONNECT_RETRIES` | `5` |  |
-| `--warp-connect-delay` | `WARP_CONNECT_DELAY` | `2` | seconds |
-| `--warp-ready-timeout` | `WARP_READY_TIMEOUT` | `60` | seconds to wait for the netns default route to land on the WARP iface (`warp-cli connect` reports success before the tunnel is actually up) |
-| `--warp-iface` | `WARP_IFACE` | `CloudflareWARP` | warp-svc's interface name |
-| `--warp-state-dir` | `WARP_STATE_DIR` | _empty_ | if set, bind-mount this host dir into the sandbox at `/var/lib/cloudflare-warp` so registration persists; default is ephemeral (`warp-cli registration new` on every run) |
-| `--nft-fwmark` | `NFT_FWMARK` | `1` |  |
-| `--nft-iface` | `NFT_IFACE` | `CloudflareWARP` |  |
-| `--log-file` | `LOG_FILE` | _empty_ | JSON log file; empty = blackhole |
-| `--listen` (proxy only) | `PROXY_LISTEN` | `0.0.0.0:1080` | parent-ns SOCKS5 listener |
+| `--wg-endpoint` | `WG_ENDPOINT` | required | WireGuard peer endpoint as `host:port`. |
+| `--wg-public-key` | `WG_PUBLIC_KEY` | required | WireGuard peer public key, base64. |
+| `--wg-preshared-key` | `WG_PRESHARED_KEY` | empty | Optional preshared key, base64. |
+| `--wg-address` | `WG_ADDRESS` | required | Comma-separated local WireGuard addresses. CIDR and bare IP forms are accepted. |
+| `--wg-allowed-ips` | `WG_ALLOWED_IPS` | `0.0.0.0/0,::/0` | Comma-separated peer allowed-IP CIDRs. |
+| `--wg-mtu` | `WG_MTU` | `1280` | Userspace WireGuard MTU. |
+| `--wg-persistent-keepalive` | `WG_PERSISTENT_KEEPALIVE` | `25` | WireGuard persistent keepalive in seconds; `0` disables it. |
+| `--wg-over-tcp` | `WG_OVER_TCP` | `false` | Send WireGuard datagrams over one TCP connection using udp-over-tcp framing. |
+| `--outer-socks5` | `OUTER_SOCKS5` | empty | Optional no-auth SOCKS5 server used to reach the WireGuard endpoint before the tunnel is up. |
+| `--inner-socks5` | `INNER_SOCKS5` | required | No-auth SOCKS5 server reachable inside the WireGuard tunnel. Used for WARP daemon egress. |
+| `--tun-dev` | `TUN_DEV` | random `mwxxxxxx` | Kernel TUN device name created for the WARP namespace. |
+| `--tun-mtu` | `TUN_MTU` | `1420` | MTU for the WARP-facing TUN and gVisor netstack. |
+| `--resolv-nameserver` | `RESOLV_NAMESERVER` | `8.8.8.8` | Nameserver written to namespace-local `resolv.conf` files and used by the WireGuard netstack. |
+| `--warp-svc-cmd` | `WARP_SVC_CMD` | `warp-svc` | Command used to start WARP service. May include arguments. Empty disables starting it. |
+| `--warp-cli` | `WARP_CLI` | `warp-cli` | Command used for registration/connect. Empty skips CLI calls, but WARP routing must still become ready before timeout. |
+| `--warp-accept-tos` | `WARP_ACCEPT_TOS` | `true` | Pass `--accept-tos` to `warp-cli`; connect retries without it if the installed CLI rejects the flag. |
+| `--warp-connect-retries` | `WARP_CONNECT_RETRIES` | `5` | Registration/connect retry attempts. |
+| `--warp-connect-delay` | `WARP_CONNECT_DELAY` | `2` | Delay between registration/connect attempts, in seconds. |
+| `--warp-ready-timeout` | `WARP_READY_TIMEOUT` | `60` | Seconds to wait for the WARP namespace route to use `--warp-iface`. |
+| `--warp-iface` | `WARP_IFACE` | `CloudflareWARP` | Interface name created by `warp-svc`. Also used by the nftables forward guard and masquerade rules. |
+| `--warp-state-dir` | `WARP_STATE_DIR` | empty | Host directory bind-mounted at `/var/lib/cloudflare-warp` in the WARP sandbox. Empty means ephemeral WARP state and a fresh registration each run. |
+| `--log-file` | `LOG_FILE` | empty | Append JSON logs here. Empty disables logging. |
+| `--listen` | `PROXY_LISTEN` | `0.0.0.0:1080` | `proxy` only. Parent-namespace SOCKS5 listen address. |
+
+Boolean environment values accept `1/0`, `true/false`, `yes/no`, and `on/off`.
+Invalid integer or boolean environment values fall back to the default.
+
+## Examples
+
+Run a command through WARP:
+
+```sh
+sudo WG_PRIVATE_KEY='...' \
+  mwarp run \
+  --wg-endpoint 'example.com:51820' \
+  --wg-public-key '...' \
+  --wg-address '10.66.0.2/32,fd00::2/128' \
+  --inner-socks5 '10.66.0.1:1080' \
+  --warp-state-dir /var/lib/mwarp-cloudflare-warp \
+  -- curl https://cloudflare.com/cdn-cgi/trace
+```
+
+Expose a SOCKS5 proxy whose upstream traffic exits through WARP:
+
+```sh
+sudo WG_PRIVATE_KEY='...' \
+  mwarp proxy \
+  --wg-endpoint 'example.com:51820' \
+  --wg-public-key '...' \
+  --wg-address '10.66.0.2/32' \
+  --inner-socks5 '10.66.0.1:1080' \
+  --listen '127.0.0.1:1080'
+```
+
+Tunnel the inner WireGuard datagrams over TCP:
+
+```sh
+sudo WG_PRIVATE_KEY='...' \
+  mwarp run \
+  --wg-over-tcp \
+  --wg-endpoint 'example.com:443' \
+  --wg-public-key '...' \
+  --wg-address '10.66.0.2/32' \
+  --inner-socks5 '10.66.0.1:1080' \
+  -- curl https://cloudflare.com/cdn-cgi/trace
+```
 
 ## Build
 
@@ -80,4 +150,17 @@ All flags can also be supplied as environment variables. The WireGuard
 go build -o mwarp .
 ```
 
-Requires Linux. Run as root (CAP_NET_ADMIN, CAP_SYS_ADMIN, CAP_MKNOD).
+The module currently targets Go 1.25.5.
+
+## Requirements And Notes
+
+- Linux only.
+- Run as root. The process creates network and mount namespaces, TUN devices,
+  veth pairs, routes, nftables tables, bind mounts, and minimal device nodes.
+- `/dev/net/tun` must be available.
+- `warp-svc` and `warp-cli` must be installed and discoverable on `PATH`, or
+  configured with `--warp-svc-cmd` and `--warp-cli`.
+- The inner and outer SOCKS5 clients implemented by `mwarp` support no-auth
+  SOCKS5 only.
+- By default WARP state is ephemeral. Set `--warp-state-dir` if you want
+  Cloudflare WARP registration and settings to persist across runs.
