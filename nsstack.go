@@ -243,4 +243,3 @@ func udpPipe(local *gonet.UDPConn, remote *Socks5UDPSession, dstAP netip.AddrPor
 }
 
 var errCancelled = errors.New("cancelled")
-

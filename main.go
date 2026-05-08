@@ -91,7 +91,7 @@ func cmdProxy(args []string) int {
 	cfg := &Config{}
 	fs := flag.NewFlagSet("proxy", flag.ContinueOnError)
 	registerCommonFlags(fs, cfg)
-	fs.StringVar(&cfg.ProxyListen, "listen", envOr("PROXY_LISTEN", "0.0.0.0:1080"), "Listen address for the SOCKS5 server in the parent ns")
+	fs.StringVar(&cfg.ProxyListen, "listen", envOr("PROXY_LISTEN", "127.0.0.1:1080"), "Listen address for the SOCKS5 server in the parent ns")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -263,7 +263,15 @@ func setupAll(ctx context.Context, cfg *Config, logger *zap.Logger) (*State, err
 		state.WarpSvc = warpSvc
 		go func() {
 			err := warpSvc.Wait()
-			logger.Warn("warp-svc exited", zap.Error(err))
+			if ctx.Err() == nil {
+				// Premature exit — the tunnel will be dead and any
+				// further egress will silently fail to dial. Surface
+				// this as an error so operators notice; supervisors
+				// can react via the log.
+				logger.Error("warp-svc exited unexpectedly", zap.Error(err))
+			} else {
+				logger.Warn("warp-svc exited", zap.Error(err))
+			}
 		}()
 	}
 

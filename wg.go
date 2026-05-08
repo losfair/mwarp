@@ -167,7 +167,11 @@ func StartWireGuard(c *Config, logger *zap.Logger) (*WGClient, error) {
 }
 
 func (w *WGClient) Close() {
+	if w == nil {
+		return
+	}
 	if w.device != nil {
 		w.device.Close()
+		w.device = nil
 	}
 }

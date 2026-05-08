@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
@@ -113,13 +112,13 @@ func quoteArg(arg string) string {
 	return `"` + arg + `"`
 }
 
+// warpCommandEnv returns the environment passed to warp-svc / warp-cli.
+// PATH is hardcoded to the sandbox bind-mount directory; nothing from the
+// parent environment is forwarded so secrets and unrelated state never
+// land in the child's /proc/<pid>/environ. The warp executables are
+// invoked by absolute path, so PATH only matters if warp itself shells
+// out — and if it does, we want it to find binaries from /warp, not
+// arbitrary host paths.
 func warpCommandEnv() []string {
-	env := append([]string(nil), os.Environ()...)
-	for i, kv := range env {
-		if strings.HasPrefix(kv, "PATH=") {
-			env[i] = "PATH=" + warpBinDir + ":" + strings.TrimPrefix(kv, "PATH=")
-			return env
-		}
-	}
-	return append(env, "PATH="+warpBinDir)
+	return []string{"PATH=" + warpBinDir + ":/usr/bin:/usr/sbin"}
 }
