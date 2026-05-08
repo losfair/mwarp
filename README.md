@@ -1,8 +1,8 @@
 # mwarp
 
 `mwarp` is a Linux-only helper that runs Cloudflare WARP behind an inner
-WireGuard + SOCKS5 path, then runs a command or exposes a SOCKS5 proxy whose
-traffic exits through WARP.
+SOCKS5 path, optionally reached through userspace WireGuard, then runs a
+command or exposes a SOCKS5 proxy whose traffic exits through WARP.
 
 The important property is the traffic shape:
 
@@ -13,19 +13,21 @@ user command / parent SOCKS5 listener
   -> warp-svc traffic
   -> kernel TUN handled by gVisor netstack
   -> inner SOCKS5 server
-  -> userspace WireGuard tunnel
+  -> userspace WireGuard tunnel (unless --no-wireguard)
   -> WireGuard peer
 ```
 
 The WARP daemon's own network traffic is forced through the inner SOCKS5
-server reachable over WireGuard. User traffic is placed in a second namespace
-whose only default route points back through the WARP namespace.
+server. By default that server is reached over userspace WireGuard; with
+`--no-wireguard`, it is dialed directly from the host namespace. User traffic is
+placed in a second namespace whose only default route points back through the
+WARP namespace.
 
 ## What It Does
 
-- Starts a userspace WireGuard device with `wireguard-go`'s netstack TUN.
-  There is no `wg-quick` dependency and no kernel WireGuard interface for the
-  inner tunnel.
+- Starts a userspace WireGuard device with `wireguard-go`'s netstack TUN unless
+  `--no-wireguard` is set. There is no `wg-quick` dependency and no kernel
+  WireGuard interface for the inner tunnel.
 - Optionally reaches the WireGuard peer through an outer no-auth SOCKS5 proxy.
   UDP WireGuard uses SOCKS5 `UDP ASSOCIATE`; `--wg-over-tcp` uses a
   Mullvad-compatible 16-bit big-endian udp-over-tcp frame stream, optionally
@@ -35,7 +37,8 @@ whose only default route points back through the WARP namespace.
   `/proc`, minimal `/dev` nodes, generated DNS config, and optional WARP state.
 - Creates a kernel TUN device in the WARP namespace and attaches it to a
   gVisor netstack in the parent process. The netstack accepts TCP and UDP flows
-  from WARP and forwards them through the inner SOCKS5 server over WireGuard.
+  from WARP and forwards them through the inner SOCKS5 server, either over
+  WireGuard or directly from the host namespace.
 - Starts `warp-svc`, registers WARP with `warp-cli registration new`, runs
   `warp-cli connect`, and waits until the default route for `1.1.1.1` uses the
   configured WARP interface.
@@ -72,21 +75,22 @@ Upstream sockets are opened from inside the egress namespace.
 
 ## Configuration
 
-All flags can also be supplied as environment variables. `WG_PRIVATE_KEY` is
-environment-only and is required.
+All flags can also be supplied as environment variables. When WireGuard is
+enabled, `WG_PRIVATE_KEY` is environment-only and is required.
 
 | Flag | Env | Default | Notes |
 | ---- | --- | ------- | ----- |
-| `--wg-endpoint` | `WG_ENDPOINT` | required | WireGuard peer endpoint as `host:port`. |
-| `--wg-public-key` | `WG_PUBLIC_KEY` | required | WireGuard peer public key, base64. |
+| `--no-wireguard` | `NO_WIREGUARD` | `false` | Skip userspace WireGuard and dial `--inner-socks5` directly from the host namespace. |
+| `--wg-endpoint` | `WG_ENDPOINT` | required with WireGuard | WireGuard peer endpoint as `host:port`. Ignored with `--no-wireguard`. |
+| `--wg-public-key` | `WG_PUBLIC_KEY` | required with WireGuard | WireGuard peer public key, base64. Ignored with `--no-wireguard`. |
 | `--wg-preshared-key` | `WG_PRESHARED_KEY` | empty | Optional preshared key, base64. |
-| `--wg-address` | `WG_ADDRESS` | required | Comma-separated local WireGuard addresses. CIDR and bare IP forms are accepted. |
+| `--wg-address` | `WG_ADDRESS` | required with WireGuard | Comma-separated local WireGuard addresses. CIDR and bare IP forms are accepted. Ignored with `--no-wireguard`. |
 | `--wg-allowed-ips` | `WG_ALLOWED_IPS` | `0.0.0.0/0,::/0` | Comma-separated peer allowed-IP CIDRs. |
 | `--wg-mtu` | `WG_MTU` | `1280` | Userspace WireGuard MTU. |
 | `--wg-persistent-keepalive` | `WG_PERSISTENT_KEEPALIVE` | `25` | WireGuard persistent keepalive in seconds; `0` disables it. |
 | `--wg-over-tcp` | `WG_OVER_TCP` | `false` | Send WireGuard datagrams over one TCP connection using udp-over-tcp framing. |
-| `--outer-socks5` | `OUTER_SOCKS5` | empty | Optional no-auth SOCKS5 server used to reach the WireGuard endpoint before the tunnel is up. |
-| `--inner-socks5` | `INNER_SOCKS5` | required | No-auth SOCKS5 server reachable inside the WireGuard tunnel. Used for WARP daemon egress. |
+| `--outer-socks5` | `OUTER_SOCKS5` | empty | Optional no-auth SOCKS5 server used to reach the WireGuard endpoint before the tunnel is up. Ignored with `--no-wireguard`. |
+| `--inner-socks5` | `INNER_SOCKS5` | required | No-auth SOCKS5 server used for WARP daemon egress. It must be reachable inside WireGuard by default, or directly from the host namespace with `--no-wireguard`. |
 | `--tun-dev` | `TUN_DEV` | random `mwxxxxxx` | Kernel TUN device name created for the WARP namespace. |
 | `--tun-mtu` | `TUN_MTU` | `1420` | MTU for the WARP-facing TUN and gVisor netstack. |
 | `--resolv-nameserver` | `RESOLV_NAMESERVER` | `8.8.8.8` | Nameserver written to namespace-local `resolv.conf` files and used by the WireGuard netstack. |
@@ -141,6 +145,16 @@ sudo WG_PRIVATE_KEY='...' \
   --wg-public-key '...' \
   --wg-address '10.66.0.2/32' \
   --inner-socks5 '10.66.0.1:1080' \
+  -- curl https://cloudflare.com/cdn-cgi/trace
+```
+
+Run without userspace WireGuard, dialing the inner SOCKS5 server directly from
+the host namespace:
+
+```sh
+sudo mwarp run \
+  --no-wireguard \
+  --inner-socks5 '127.0.0.1:1080' \
   -- curl https://cloudflare.com/cdn-cgi/trace
 ```
 

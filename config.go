@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 )
 
 type Config struct {
+	NoWireGuard    bool
 	WGEndpoint     string
 	WGPublicKey    string
 	WGPresharedKey string
@@ -118,6 +120,8 @@ func parsePrefixList(s string) ([]netip.Prefix, error) {
 }
 
 func registerCommonFlags(fs *flag.FlagSet, c *Config) {
+	fs.BoolVar(&c.NoWireGuard, "no-wireguard", envBool("NO_WIREGUARD", false), "Skip userspace WireGuard and reach --inner-socks5 directly from the host namespace")
+
 	fs.StringVar(&c.WGEndpoint, "wg-endpoint", envOr("WG_ENDPOINT", ""), "WireGuard peer endpoint host:port")
 	fs.StringVar(&c.WGPublicKey, "wg-public-key", envOr("WG_PUBLIC_KEY", ""), "WireGuard peer public key (base64)")
 	fs.StringVar(&c.WGPresharedKey, "wg-preshared-key", envOr("WG_PRESHARED_KEY", ""), "WireGuard preshared key (optional, base64)")
@@ -150,6 +154,15 @@ func registerCommonFlags(fs *flag.FlagSet, c *Config) {
 
 func (c *Config) finalize() error {
 	var err error
+	if c.InnerSocks5 == "" {
+		return fmt.Errorf("--inner-socks5 / INNER_SOCKS5 is required")
+	}
+	if _, _, err := net.SplitHostPort(c.InnerSocks5); err != nil {
+		return fmt.Errorf("invalid inner socks5 address %q: %w", c.InnerSocks5, err)
+	}
+	if c.NoWireGuard {
+		return nil
+	}
 	if c.WGAddress, err = parseAddrList(c.wgAddrRaw); err != nil {
 		return err
 	}
@@ -168,9 +181,6 @@ func (c *Config) finalize() error {
 	}
 	if err := validateOuterSocks5(c.OuterSocks5); err != nil {
 		return err
-	}
-	if c.InnerSocks5 == "" {
-		return fmt.Errorf("--inner-socks5 / INNER_SOCKS5 is required")
 	}
 	if len(c.WGAddress) == 0 {
 		return fmt.Errorf("--wg-address / WG_ADDRESS is required (e.g. 10.66.123.45/32)")

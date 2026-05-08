@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -13,7 +14,7 @@ import (
 	"go.uber.org/zap"
 )
 
-const usage = `mwarp — single-binary userspace WireGuard + Cloudflare WARP plumbing
+const usage = `mwarp — single-binary SOCKS5/WireGuard + Cloudflare WARP plumbing
 
 Usage:
   mwarp run   [flags] -- COMMAND [ARGS...]    run COMMAND through WARP
@@ -22,7 +23,7 @@ Usage:
                                               the WARP-routed egress netns
 
 All flags can also be set via environment variables (see README/source).
-The WireGuard private key is taken from $WG_PRIVATE_KEY only.
+When WireGuard is enabled, the private key is taken from $WG_PRIVATE_KEY only.
 `
 
 func main() {
@@ -172,7 +173,7 @@ func (s *State) Close() {
 	}
 }
 
-// setupAll wires WG, netns, TUN, gvisor netstack, warp.
+// setupAll wires the inner SOCKS5 path, netns, TUN, gvisor netstack, warp.
 func setupAll(ctx context.Context, cfg *Config, logger *zap.Logger) (*State, error) {
 	if os.Geteuid() != 0 {
 		return nil, fmt.Errorf("must run as root (CAP_NET_ADMIN required)")
@@ -180,12 +181,20 @@ func setupAll(ctx context.Context, cfg *Config, logger *zap.Logger) (*State, err
 
 	state := &State{logger: logger}
 
-	wg, err := StartWireGuard(cfg, logger)
-	if err != nil {
-		state.Close()
-		return nil, fmt.Errorf("wireguard: %w", err)
+	var socksBase Dialer
+	if cfg.NoWireGuard {
+		socksBase = &net.Dialer{}
+		logger.Info("wireguard disabled; using host namespace for inner socks5",
+			zap.String("inner_socks5", cfg.InnerSocks5))
+	} else {
+		wg, err := StartWireGuard(cfg, logger)
+		if err != nil {
+			state.Close()
+			return nil, fmt.Errorf("wireguard: %w", err)
+		}
+		state.WG = wg
+		socksBase = wg.Net
 	}
-	state.WG = wg
 
 	var warpExtraBinds []BindMount
 	warpCommandBinds, err := prepareWarpCommandBinds(cfg)
@@ -229,7 +238,7 @@ func setupAll(ctx context.Context, cfg *Config, logger *zap.Logger) (*State, err
 
 	socks := &Socks5Client{
 		Server: cfg.InnerSocks5,
-		Base:   wg.Net,
+		Base:   socksBase,
 	}
 	stack, err := NewNSStack(tun.File, cfg.TunMTU, socks, logger)
 	if err != nil {
