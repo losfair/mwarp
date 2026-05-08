@@ -164,10 +164,12 @@ func dialInNS(ctx context.Context, ns *NetNS, dst string) (net.Conn, error) {
 	resCh := make(chan dialResult, 1)
 
 	go func() {
+		var pushed bool
 		err := ns.Run(func() error {
 			ips, err := resolveInNS(ctx, host)
 			if err != nil {
 				resCh <- dialResult{err: fmt.Errorf("resolve %s: %w", host, err)}
+				pushed = true
 				return nil
 			}
 			var lastErr error
@@ -175,6 +177,7 @@ func dialInNS(ctx context.Context, ns *NetNS, dst string) (net.Conn, error) {
 				conn, err := connectInNS(ctx, ip, uint16(port))
 				if err == nil {
 					resCh <- dialResult{conn: conn}
+					pushed = true
 					return nil
 				}
 				lastErr = err
@@ -183,15 +186,24 @@ func dialInNS(ctx context.Context, ns *NetNS, dst string) (net.Conn, error) {
 				lastErr = fmt.Errorf("no addresses for %s", host)
 			}
 			resCh <- dialResult{err: lastErr}
+			pushed = true
 			return nil
 		})
-		if err != nil {
+		if err != nil && !pushed {
 			resCh <- dialResult{err: err}
 		}
 	}()
 
 	select {
 	case <-ctx.Done():
+		// Don't leak the connection if it lands after we've already
+		// returned. Drain in a goroutine so we don't block here.
+		go func() {
+			r := <-resCh
+			if r.conn != nil {
+				_ = r.conn.Close()
+			}
+		}()
 		return nil, ctx.Err()
 	case r := <-resCh:
 		return r.conn, r.err
@@ -245,8 +257,15 @@ func connectInNS(ctx context.Context, ip net.IP, port uint16) (net.Conn, error) 
 
 	if d, ok := ctx.Deadline(); ok {
 		// Best-effort: use SO_SNDTIMEO. The real cancellation comes from
-		// the caller closing the conn after a timeout.
-		tv := unix.NsecToTimeval(d.Sub(time.Now()).Nanoseconds())
+		// the caller closing the conn after a timeout. NsecToTimeval can
+		// produce a negative timeout (= "block forever" on Linux) if the
+		// deadline has already passed; clamp to a tiny positive value so
+		// connect fails fast instead.
+		remain := time.Until(d)
+		if remain <= 0 {
+			remain = time.Millisecond
+		}
+		tv := unix.NsecToTimeval(remain.Nanoseconds())
 		_ = unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_SNDTIMEO, &tv)
 	}
 

@@ -282,8 +282,13 @@ func installMasqueradeFamily(family nftables.TableFamily, tableName, warpIface s
 }
 
 // ifname pads an interface name to IFNAMSIZ for OIFNAME comparisons.
+// Panics on names too long for the kernel's IFNAMSIZ (15 + NUL); the caller
+// has already validated WarpIface, and the constants in this file are short.
 func ifname(s string) []byte {
 	const sz = 16
+	if len(s) >= sz {
+		panic(fmt.Sprintf("ifname %q exceeds IFNAMSIZ-1 (%d)", s, sz-1))
+	}
 	b := make([]byte, sz)
 	copy(b, s)
 	return b

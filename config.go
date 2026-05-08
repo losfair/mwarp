@@ -181,5 +181,14 @@ func (c *Config) finalize() error {
 			netip.MustParsePrefix("::/0"),
 		}
 	}
+	// IFNAMSIZ is 16 (incl. trailing NUL); the kernel silently truncates
+	// longer names, which would make the forward-guard nft rule match the
+	// wrong interface.
+	if len(c.WarpIface) == 0 || len(c.WarpIface) > 15 {
+		return fmt.Errorf("--warp-iface must be 1..15 bytes (got %d)", len(c.WarpIface))
+	}
+	if c.TunDev != "" && len(c.TunDev) > 15 {
+		return fmt.Errorf("--tun-dev must be 1..15 bytes (got %d)", len(c.TunDev))
+	}
 	return nil
 }

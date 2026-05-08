@@ -113,13 +113,41 @@ func quoteArg(arg string) string {
 	return `"` + arg + `"`
 }
 
+// warpCommandEnv returns the environment passed to warp-svc / warp-cli.
+// Inherits the parent environment but strips secrets that warp does not need
+// (notably WG_PRIVATE_KEY, which would otherwise be readable in the child's
+// /proc/<pid>/environ).
 func warpCommandEnv() []string {
-	env := append([]string(nil), os.Environ()...)
-	for i, kv := range env {
-		if strings.HasPrefix(kv, "PATH=") {
-			env[i] = "PATH=" + warpBinDir + ":" + strings.TrimPrefix(kv, "PATH=")
-			return env
+	src := os.Environ()
+	env := make([]string, 0, len(src)+1)
+	pathSet := false
+	for _, kv := range src {
+		eq := strings.IndexByte(kv, '=')
+		if eq < 0 {
+			continue
 		}
+		key := kv[:eq]
+		if warpEnvBlocked(key) {
+			continue
+		}
+		if key == "PATH" {
+			env = append(env, "PATH="+warpBinDir+":"+kv[eq+1:])
+			pathSet = true
+			continue
+		}
+		env = append(env, kv)
 	}
-	return append(env, "PATH="+warpBinDir)
+	if !pathSet {
+		env = append(env, "PATH="+warpBinDir)
+	}
+	return env
+}
+
+func warpEnvBlocked(key string) bool {
+	switch key {
+	case "WG_PRIVATE_KEY",
+		"WG_PRESHARED_KEY":
+		return true
+	}
+	return false
 }

@@ -99,7 +99,7 @@ environment-only and is required.
 | `--warp-iface` | `WARP_IFACE` | `CloudflareWARP` | Interface name created by `warp-svc`. Also used by the nftables forward guard and masquerade rules. |
 | `--warp-state-dir` | `WARP_STATE_DIR` | empty | Host directory bind-mounted at `/var/lib/cloudflare-warp` in the WARP sandbox. Empty means ephemeral WARP state and a fresh registration each run. |
 | `--log-file` | `LOG_FILE` | empty | Append JSON logs here. Empty disables logging. |
-| `--listen` | `PROXY_LISTEN` | `0.0.0.0:1080` | `proxy` only. Parent-namespace SOCKS5 listen address. |
+| `--listen` | `PROXY_LISTEN` | `127.0.0.1:1080` | `proxy` only. Parent-namespace SOCKS5 listen address. The listener is no-auth SOCKS5; bind to `0.0.0.0` only on a trusted network. |
 
 Boolean environment values accept `1/0`, `true/false`, `yes/no`, and `on/off`.
 Invalid integer or boolean environment values fall back to the default.

@@ -33,6 +33,11 @@ type TCPBind struct {
 	open    bool     // true between Open() and Close()
 	conn    net.Conn // current TCP conn; nil if not connected yet or torn down
 	connGen uint64   // increments on each (re)dial; lets retries skip if someone else already reconnected
+
+	// writeMu serializes Write() calls on the underlying TCP connection so
+	// the 2-byte length prefix always lands contiguously with its frame
+	// even if WireGuard's encryption workers call Send concurrently.
+	writeMu sync.Mutex
 }
 
 func NewTCPBind(address string) *TCPBind {
@@ -162,6 +167,11 @@ func (b *TCPBind) sendOne(p []byte) error {
 	binary.BigEndian.PutUint16(buf[:2], uint16(len(p)))
 	copy(buf[2:], p)
 
+	// writeMu also covers the implicit "read current conn / write to it"
+	// sequence so we never push two frames at the same gen concurrently.
+	b.writeMu.Lock()
+	defer b.writeMu.Unlock()
+
 	for attempt := 0; attempt < 3; attempt++ {
 		c, gen, isOpen := b.currentConn()
 		if !isOpen {
@@ -172,6 +182,9 @@ func (b *TCPBind) sendOne(p []byte) error {
 				if errors.Is(err, net.ErrClosed) {
 					return err
 				}
+				// Brief backoff so a hard-failing dial doesn't burn CPU
+				// retrying instantly.
+				time.Sleep(100 * time.Millisecond)
 				continue
 			}
 			continue

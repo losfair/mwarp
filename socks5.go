@@ -57,6 +57,10 @@ func (c *Socks5Client) DialContext(ctx context.Context, network, address string)
 	}
 	if d, ok := ctx.Deadline(); ok {
 		conn.SetDeadline(d)
+	} else {
+		// Bound the handshake so a wedged proxy doesn't pin the
+		// caller goroutine forever.
+		conn.SetDeadline(time.Now().Add(30 * time.Second))
 	}
 
 	if err := socks5Greet(conn); err != nil {
@@ -84,6 +88,8 @@ func (c *Socks5Client) UDPAssociate(ctx context.Context) (*Socks5UDPSession, err
 	}
 	if d, ok := ctx.Deadline(); ok {
 		ctrl.SetDeadline(d)
+	} else {
+		ctrl.SetDeadline(time.Now().Add(30 * time.Second))
 	}
 	if err := socks5Greet(ctrl); err != nil {
 		ctrl.Close()
@@ -100,7 +106,10 @@ func (c *Socks5Client) UDPAssociate(ctx context.Context) (*Socks5UDPSession, err
 		return nil, err
 	}
 	ctrl.SetDeadline(time.Time{})
-	if addr == "" || addr == "0.0.0.0" {
+	// Some SOCKS5 servers reply with the wildcard address to mean
+	// "send back to whatever IP the control connection used"; substitute
+	// the server's own host in that case.
+	if addr == "" || addr == "0.0.0.0" || addr == "::" || addr == "::0" {
 		host, _, _ := net.SplitHostPort(c.Server)
 		addr = host
 	}
@@ -207,6 +216,11 @@ func socks5ReadReply(c net.Conn) (string, uint16, error) {
 type Socks5UDPSession struct {
 	ctrl net.Conn
 	conn net.Conn
+
+	// readBuf is a single per-session scratch buffer for the relay's
+	// incoming framing, sized for any plausible UDP datagram. Reused
+	// across ReadFrom calls so we don't allocate per packet.
+	readBuf [65535 + 22]byte
 }
 
 func (s *Socks5UDPSession) Close() error {
@@ -261,7 +275,7 @@ func (s *Socks5UDPSession) WriteToHost(p []byte, host string, port uint16) (int,
 // ReadFrom reads a SOCKS5-wrapped datagram, strips the header, and reports
 // the remote endpoint.
 func (s *Socks5UDPSession) ReadFrom(buf []byte) (int, netip.AddrPort, error) {
-	tmp := make([]byte, len(buf)+512)
+	tmp := s.readBuf[:]
 	n, err := s.conn.Read(tmp)
 	if err != nil {
 		return 0, netip.AddrPort{}, err
