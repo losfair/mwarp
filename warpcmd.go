@@ -114,40 +114,16 @@ func quoteArg(arg string) string {
 }
 
 // warpCommandEnv returns the environment passed to warp-svc / warp-cli.
-// Inherits the parent environment but strips secrets that warp does not need
-// (notably WG_PRIVATE_KEY, which would otherwise be readable in the child's
-// /proc/<pid>/environ).
+// Only PATH is provided; nothing from the parent environment is forwarded
+// (no WG_* secrets, no proxy URLs, no shell state, etc.) so none of it
+// lands in the child's /proc/<pid>/environ.
+//
+// PATH is constructed so the sandbox bind-mount directory is searched
+// first; the host PATH is appended only as a fallback for libc/dynamic
+// loader lookups that might consult it.
 func warpCommandEnv() []string {
-	src := os.Environ()
-	env := make([]string, 0, len(src)+1)
-	pathSet := false
-	for _, kv := range src {
-		eq := strings.IndexByte(kv, '=')
-		if eq < 0 {
-			continue
-		}
-		key := kv[:eq]
-		if warpEnvBlocked(key) {
-			continue
-		}
-		if key == "PATH" {
-			env = append(env, "PATH="+warpBinDir+":"+kv[eq+1:])
-			pathSet = true
-			continue
-		}
-		env = append(env, kv)
+	if hostPath, ok := os.LookupEnv("PATH"); ok {
+		return []string{"PATH=" + warpBinDir + ":" + hostPath}
 	}
-	if !pathSet {
-		env = append(env, "PATH="+warpBinDir)
-	}
-	return env
-}
-
-func warpEnvBlocked(key string) bool {
-	switch key {
-	case "WG_PRIVATE_KEY",
-		"WG_PRESHARED_KEY":
-		return true
-	}
-	return false
+	return []string{"PATH=" + warpBinDir}
 }

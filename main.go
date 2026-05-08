@@ -90,7 +90,7 @@ func cmdProxy(args []string) int {
 	cfg := &Config{}
 	fs := flag.NewFlagSet("proxy", flag.ContinueOnError)
 	registerCommonFlags(fs, cfg)
-	fs.StringVar(&cfg.ProxyListen, "listen", envOr("PROXY_LISTEN", "127.0.0.1:1080"), "Listen address for the SOCKS5 server in the parent ns (no-auth SOCKS5 — bind to 0.0.0.0 only on a trusted network)")
+	fs.StringVar(&cfg.ProxyListen, "listen", envOr("PROXY_LISTEN", "127.0.0.1:1080"), "Listen address for the SOCKS5 server in the parent ns")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
