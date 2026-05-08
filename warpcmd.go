@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
@@ -114,16 +113,12 @@ func quoteArg(arg string) string {
 }
 
 // warpCommandEnv returns the environment passed to warp-svc / warp-cli.
-// Only PATH is provided; nothing from the parent environment is forwarded
-// (no WG_* secrets, no proxy URLs, no shell state, etc.) so none of it
-// lands in the child's /proc/<pid>/environ.
-//
-// PATH is constructed so the sandbox bind-mount directory is searched
-// first; the host PATH is appended only as a fallback for libc/dynamic
-// loader lookups that might consult it.
+// PATH is hardcoded to the sandbox bind-mount directory; nothing from the
+// parent environment is forwarded so secrets and unrelated state never
+// land in the child's /proc/<pid>/environ. The warp executables are
+// invoked by absolute path, so PATH only matters if warp itself shells
+// out — and if it does, we want it to find binaries from /warp, not
+// arbitrary host paths.
 func warpCommandEnv() []string {
-	if hostPath, ok := os.LookupEnv("PATH"); ok {
-		return []string{"PATH=" + warpBinDir + ":" + hostPath}
-	}
 	return []string{"PATH=" + warpBinDir}
 }
