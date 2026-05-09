@@ -39,9 +39,9 @@ WARP namespace.
   gVisor netstack in the parent process. The netstack accepts TCP and UDP flows
   from WARP and forwards them through the inner SOCKS5 server, either over
   WireGuard or directly from the host namespace.
-- Starts `warp-svc`, registers WARP with `warp-cli registration new`, runs
-  `warp-cli connect`, and waits until the default route for `1.1.1.1` uses the
-  configured WARP interface.
+- Starts `warp-svc`, registers WARP with `warp-cli registration new`, sets the
+  configured tunnel protocol, runs `warp-cli connect`, and waits until the
+  default route for `1.1.1.1` uses the configured WARP interface.
 - Creates a second egress namespace with the host filesystem still mounted at
   `/`, except for a namespace-local read-only `/etc/resolv.conf`.
 - Connects the WARP and egress namespaces with a veth pair. The egress
@@ -78,32 +78,32 @@ Upstream sockets are opened from inside the egress namespace.
 All flags can also be supplied as environment variables. When WireGuard is
 enabled, `WG_PRIVATE_KEY` is environment-only and is required.
 
-| Flag | Env | Default | Notes |
-| ---- | --- | ------- | ----- |
-| `--no-wireguard` | `NO_WIREGUARD` | `false` | Skip userspace WireGuard and dial `--inner-socks5` directly from the host namespace. |
-| `--wg-endpoint` | `WG_ENDPOINT` | required with WireGuard | WireGuard peer endpoint as `host:port`. Ignored with `--no-wireguard`. |
-| `--wg-public-key` | `WG_PUBLIC_KEY` | required with WireGuard | WireGuard peer public key, base64. Ignored with `--no-wireguard`. |
-| `--wg-preshared-key` | `WG_PRESHARED_KEY` | empty | Optional preshared key, base64. |
-| `--wg-address` | `WG_ADDRESS` | required with WireGuard | Comma-separated local WireGuard addresses. CIDR and bare IP forms are accepted. Ignored with `--no-wireguard`. |
-| `--wg-allowed-ips` | `WG_ALLOWED_IPS` | `0.0.0.0/0,::/0` | Comma-separated peer allowed-IP CIDRs. |
-| `--wg-mtu` | `WG_MTU` | `1280` | Userspace WireGuard MTU. |
-| `--wg-persistent-keepalive` | `WG_PERSISTENT_KEEPALIVE` | `25` | WireGuard persistent keepalive in seconds; `0` disables it. |
-| `--wg-over-tcp` | `WG_OVER_TCP` | `false` | Send WireGuard datagrams over one TCP connection using udp-over-tcp framing. |
-| `--outer-socks5` | `OUTER_SOCKS5` | empty | Optional no-auth SOCKS5 server used to reach the WireGuard endpoint before the tunnel is up. Ignored with `--no-wireguard`. |
-| `--inner-socks5` | `INNER_SOCKS5` | required | No-auth SOCKS5 server used for WARP daemon egress. It must be reachable inside WireGuard by default, or directly from the host namespace with `--no-wireguard`. |
-| `--tun-dev` | `TUN_DEV` | random `mwxxxxxx` | Kernel TUN device name created for the WARP namespace. |
-| `--tun-mtu` | `TUN_MTU` | `1420` | MTU for the WARP-facing TUN and gVisor netstack. |
-| `--resolv-nameserver` | `RESOLV_NAMESERVER` | `8.8.8.8` | Nameserver written to namespace-local `resolv.conf` files and used by the WireGuard netstack. |
-| `--warp-svc-cmd` | `WARP_SVC_CMD` | `warp-svc` | Command used to start WARP service. May include arguments. Empty disables starting it. |
-| `--warp-cli` | `WARP_CLI` | `warp-cli` | Command used for registration/connect. Empty skips CLI calls, but WARP routing must still become ready before timeout. |
-| `--warp-accept-tos` | `WARP_ACCEPT_TOS` | `true` | Pass `--accept-tos` to `warp-cli`; connect retries without it if the installed CLI rejects the flag. |
-| `--warp-connect-retries` | `WARP_CONNECT_RETRIES` | `5` | Registration/connect retry attempts. |
-| `--warp-connect-delay` | `WARP_CONNECT_DELAY` | `2` | Delay between registration/connect attempts, in seconds. |
-| `--warp-ready-timeout` | `WARP_READY_TIMEOUT` | `60` | Seconds to wait for the WARP namespace route to use `--warp-iface`. |
-| `--warp-iface` | `WARP_IFACE` | `CloudflareWARP` | Interface name created by `warp-svc`. Also used by the nftables forward guard and masquerade rules. |
-| `--warp-state-dir` | `WARP_STATE_DIR` | empty | Host directory bind-mounted at `/var/lib/cloudflare-warp` in the WARP sandbox. Empty means ephemeral WARP state and a fresh registration each run. |
-| `--log-file` | `LOG_FILE` | empty | Append JSON logs here. Empty disables logging. |
-| `--listen` | `PROXY_LISTEN` | `127.0.0.1:1080` | `proxy` only. Parent-namespace SOCKS5 listen address. The listener is no-auth SOCKS5; bind to `0.0.0.0` only on a trusted network. |
+| Flag                        | Env                       | Default                 | Notes                                                                                                                                                           |
+| --------------------------- | ------------------------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--no-wireguard`            | `NO_WIREGUARD`            | `false`                 | Skip userspace WireGuard and dial `--inner-socks5` directly from the host namespace.                                                                            |
+| `--wg-endpoint`             | `WG_ENDPOINT`             | required with WireGuard | WireGuard peer endpoint as `host:port`. Ignored with `--no-wireguard`.                                                                                          |
+| `--wg-public-key`           | `WG_PUBLIC_KEY`           | required with WireGuard | WireGuard peer public key, base64. Ignored with `--no-wireguard`.                                                                                               |
+| `--wg-preshared-key`        | `WG_PRESHARED_KEY`        | empty                   | Optional preshared key, base64.                                                                                                                                 |
+| `--wg-address`              | `WG_ADDRESS`              | required with WireGuard | Comma-separated local WireGuard addresses. CIDR and bare IP forms are accepted. Ignored with `--no-wireguard`.                                                  |
+| `--wg-allowed-ips`          | `WG_ALLOWED_IPS`          | `0.0.0.0/0,::/0`        | Comma-separated peer allowed-IP CIDRs.                                                                                                                          |
+| `--wg-mtu`                  | `WG_MTU`                  | `1280`                  | Userspace WireGuard MTU.                                                                                                                                        |
+| `--wg-persistent-keepalive` | `WG_PERSISTENT_KEEPALIVE` | `25`                    | WireGuard persistent keepalive in seconds; `0` disables it.                                                                                                     |
+| `--wg-over-tcp`             | `WG_OVER_TCP`             | `false`                 | Send WireGuard datagrams over one TCP connection using udp-over-tcp framing.                                                                                    |
+| `--outer-socks5`            | `OUTER_SOCKS5`            | empty                   | Optional no-auth SOCKS5 server used to reach the WireGuard endpoint before the tunnel is up. Ignored with `--no-wireguard`.                                     |
+| `--inner-socks5`            | `INNER_SOCKS5`            | required                | No-auth SOCKS5 server used for WARP daemon egress. It must be reachable inside WireGuard by default, or directly from the host namespace with `--no-wireguard`. |
+| `--tun-dev`                 | `TUN_DEV`                 | random `mwxxxxxx`       | Kernel TUN device name created for the WARP namespace.                                                                                                          |
+| `--tun-mtu`                 | `TUN_MTU`                 | `1420`                  | MTU for the WARP-facing TUN and gVisor netstack.                                                                                                                |
+| `--resolv-nameserver`       | `RESOLV_NAMESERVER`       | `8.8.8.8`               | Nameserver written to namespace-local `resolv.conf` files and used by the WireGuard netstack.                                                                   |
+| `--warp-svc-cmd`            | `WARP_SVC_CMD`            | `warp-svc`              | Command used to start WARP service. May include arguments. Empty disables starting it.                                                                          |
+| `--warp-cli`                | `WARP_CLI`                | `warp-cli`              | Command used for registration/protocol/connect. Empty skips CLI calls, but WARP routing must still become ready before timeout.                                 |
+| `--protocol`                | `WARP_PROTOCOL`           | `WireGuard`             | WARP tunnel protocol passed to `warp-cli tunnel protocol set` after registration. Empty skips setting it.                                                       |
+| `--warp-connect-retries`    | `WARP_CONNECT_RETRIES`    | `5`                     | Registration/protocol/connect retry attempts.                                                                                                                   |
+| `--warp-connect-delay`      | `WARP_CONNECT_DELAY`      | `2`                     | Delay between registration/protocol/connect attempts, in seconds.                                                                                               |
+| `--warp-ready-timeout`      | `WARP_READY_TIMEOUT`      | `60`                    | Seconds to wait for the WARP namespace route to use `--warp-iface`.                                                                                             |
+| `--warp-iface`              | `WARP_IFACE`              | `CloudflareWARP`        | Interface name created by `warp-svc`. Also used by the nftables forward guard and masquerade rules.                                                             |
+| `--warp-state-dir`          | `WARP_STATE_DIR`          | empty                   | Host directory bind-mounted at `/var/lib/cloudflare-warp` in the WARP sandbox. Empty means ephemeral WARP state and a fresh registration each run.              |
+| `--log-file`                | `LOG_FILE`                | empty                   | Append JSON logs here. Empty disables logging.                                                                                                                  |
+| `--listen`                  | `PROXY_LISTEN`            | `127.0.0.1:1080`        | `proxy` only. Parent-namespace SOCKS5 listen address. The listener is no-auth SOCKS5; bind to `0.0.0.0` only on a trusted network.                              |
 
 Boolean environment values accept `1/0`, `true/false`, `yes/no`, and `on/off`.
 Invalid integer or boolean environment values fall back to the default.

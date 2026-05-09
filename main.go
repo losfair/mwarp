@@ -284,12 +284,17 @@ func setupAll(ctx context.Context, cfg *Config, logger *zap.Logger) (*State, err
 		return nil, ctx.Err()
 	}
 
-	if err := RegisterWarp(warpNS, cfg.WarpCli, cfg.WarpAcceptTOS, cfg.WarpConnectRetry, cfg.WarpConnectDelay, logger); err != nil {
+	if err := RegisterWarp(warpNS, cfg.WarpCli, cfg.WarpConnectRetry, cfg.WarpConnectDelay, logger); err != nil {
 		state.Close()
 		return nil, err
 	}
 
-	if err := ConnectWarp(warpNS, cfg.WarpCli, cfg.WarpAcceptTOS, cfg.WarpConnectRetry, cfg.WarpConnectDelay, logger); err != nil {
+	if err := SetWarpTunnelProtocol(warpNS, cfg.WarpCli, cfg.WarpProtocol, cfg.WarpConnectRetry, cfg.WarpConnectDelay, logger); err != nil {
+		state.Close()
+		return nil, err
+	}
+
+	if err := ConnectWarp(warpNS, cfg.WarpCli, cfg.WarpConnectRetry, cfg.WarpConnectDelay, logger); err != nil {
 		state.Close()
 		return nil, err
 	}

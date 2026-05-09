@@ -32,7 +32,7 @@ type Config struct {
 
 	WarpSvcCmd       string
 	WarpCli          string
-	WarpAcceptTOS    bool
+	WarpProtocol     string
 	WarpConnectRetry int
 	WarpConnectDelay int
 	WarpReadyTimeout int
@@ -142,7 +142,7 @@ func registerCommonFlags(fs *flag.FlagSet, c *Config) {
 
 	fs.StringVar(&c.WarpSvcCmd, "warp-svc-cmd", envOr("WARP_SVC_CMD", "warp-svc"), "warp-svc command (empty to skip)")
 	fs.StringVar(&c.WarpCli, "warp-cli", envOr("WARP_CLI", "warp-cli"), "warp-cli command (empty to skip connect)")
-	fs.BoolVar(&c.WarpAcceptTOS, "warp-accept-tos", envBool("WARP_ACCEPT_TOS", true), "Pass --accept-tos to warp-cli")
+	fs.StringVar(&c.WarpProtocol, "protocol", envOr("WARP_PROTOCOL", "WireGuard"), "WARP tunnel protocol to set after registration (empty to skip)")
 	fs.IntVar(&c.WarpConnectRetry, "warp-connect-retries", envInt("WARP_CONNECT_RETRIES", 5), "warp-cli connect retries")
 	fs.IntVar(&c.WarpConnectDelay, "warp-connect-delay", envInt("WARP_CONNECT_DELAY", 2), "warp-cli connect delay (seconds)")
 	fs.IntVar(&c.WarpReadyTimeout, "warp-ready-timeout", envInt("WARP_READY_TIMEOUT", 60), "Seconds to wait for the netns default route to land on the WARP iface (after warp-cli connect)")

@@ -147,15 +147,13 @@ func StartWarpSvc(ns *NetNS, raw string, logger *zap.Logger) (*exec.Cmd, error) 
 //
 // Retries with the same cadence as ConnectWarp so we ride out warp-svc's
 // IPC socket coming up.
-func RegisterWarp(ns *NetNS, cli string, acceptTOS bool, retries, delaySeconds int, logger *zap.Logger) error {
+func RegisterWarp(ns *NetNS, cli string, retries, delaySeconds int, logger *zap.Logger) error {
 	cli = strings.TrimSpace(cli)
 	if cli == "" {
 		return nil
 	}
 	args := []string{}
-	if acceptTOS {
-		args = append(args, "--accept-tos")
-	}
+	args = append(args, "--accept-tos")
 	args = append(args, "registration", "new")
 
 	var lastErr error
@@ -195,20 +193,67 @@ func RegisterWarp(ns *NetNS, cli string, acceptTOS bool, retries, delaySeconds i
 	return lastErr
 }
 
+// SetWarpTunnelProtocol configures warp-svc's tunnel transport before
+// connecting.
+func SetWarpTunnelProtocol(ns *NetNS, cli, protocol string, retries, delaySeconds int, logger *zap.Logger) error {
+	cli = strings.TrimSpace(cli)
+	if cli == "" {
+		logger.Info("warp-cli tunnel protocol skipped (empty cli)")
+		return nil
+	}
+	protocol = strings.TrimSpace(protocol)
+	if protocol == "" {
+		logger.Info("warp-cli tunnel protocol skipped (empty protocol)")
+		return nil
+	}
+	args := []string{"--accept-tos", "tunnel", "protocol", "set", protocol}
+
+	var lastErr error
+	for i := 0; i < retries; i++ {
+		var stdout, stderr bytes.Buffer
+		var runErr error
+		err := ns.Run(func() error {
+			cmd := exec.Command(cli, args...)
+			cmd.Stdout = &stdout
+			cmd.Stderr = &stderr
+			cmd.Env = warpCommandEnv()
+			runErr = cmd.Run()
+			return runErr
+		})
+		logSubprocessBuffer("warp-cli", "stdout", &stdout, logger)
+		logSubprocessBuffer("warp-cli", "stderr", &stderr, logger)
+		if err == nil && runErr == nil {
+			logger.Info("warp-cli tunnel protocol set",
+				zap.String("protocol", protocol))
+			return nil
+		}
+		if err != nil {
+			lastErr = fmt.Errorf("warp-cli %v: %w", args, err)
+		} else {
+			lastErr = fmt.Errorf("warp-cli %v failed: %w", args, runErr)
+		}
+		logger.Warn("warp-cli tunnel protocol set failed",
+			zap.Int("attempt", i+1),
+			zap.Error(lastErr))
+		time.Sleep(time.Duration(delaySeconds) * time.Second)
+	}
+	if lastErr == nil {
+		lastErr = errors.New("warp-cli tunnel protocol set: no attempts made")
+	}
+	return lastErr
+}
+
 // ConnectWarp attempts `warp-cli [--accept-tos] connect` with the configured
 // retry/delay. Returns the last error if all attempts failed.
-func ConnectWarp(ns *NetNS, cli string, acceptTOS bool, retries, delaySeconds int, logger *zap.Logger) error {
+func ConnectWarp(ns *NetNS, cli string, retries, delaySeconds int, logger *zap.Logger) error {
 	cli = strings.TrimSpace(cli)
 	if cli == "" {
 		logger.Info("warp-cli connect skipped (empty cli)")
 		return nil
 	}
 	args := []string{}
-	if acceptTOS {
-		args = append(args, "--accept-tos")
-	}
+	args = append(args, "--accept-tos")
 	args = append(args, "connect")
-	useAccept := acceptTOS
 
 	var lastErr error
 	for i := 0; i < retries; i++ {
@@ -227,15 +272,6 @@ func ConnectWarp(ns *NetNS, cli string, acceptTOS bool, retries, delaySeconds in
 		if err == nil && runErr == nil {
 			logger.Info("warp-cli connect ok")
 			return nil
-		}
-		combined := stderr.String()
-		if useAccept && (strings.Contains(strings.ToLower(combined), "unknown flag") ||
-			strings.Contains(strings.ToLower(combined), "unknown option") ||
-			strings.Contains(strings.ToLower(combined), "flag provided but not defined")) {
-			logger.Info("warp-cli does not support --accept-tos, retrying without it")
-			useAccept = false
-			args = []string{"connect"}
-			continue
 		}
 		lastErr = fmt.Errorf("warp-cli %v failed: %w", args, runErr)
 		logger.Warn("warp-cli connect failed",
