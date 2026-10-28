@@ -138,6 +138,10 @@ func StartWarpSvc(ns *NetNS, raw string, logger *zap.Logger) (*exec.Cmd, error) 
 	return c, nil
 }
 
+type warpCommandNamespace interface {
+	Run(func() error) error
+}
+
 // RegisterWarp ensures warp-svc has a device registration before we try to
 // connect. With the sandboxed netns, /var/lib/cloudflare-warp is a fresh
 // tmpfs on every invocation, so the registration must be created on demand
@@ -147,7 +151,7 @@ func StartWarpSvc(ns *NetNS, raw string, logger *zap.Logger) (*exec.Cmd, error) 
 //
 // Retries with the same cadence as ConnectWarp so we ride out warp-svc's
 // IPC socket coming up.
-func RegisterWarp(ns *NetNS, cli string, retries, delaySeconds int, logger *zap.Logger) error {
+func RegisterWarp(ns warpCommandNamespace, cli string, retries, delaySeconds int, logger *zap.Logger) error {
 	cli = strings.TrimSpace(cli)
 	if cli == "" {
 		return nil
@@ -168,15 +172,16 @@ func RegisterWarp(ns *NetNS, cli string, retries, delaySeconds int, logger *zap.
 			runErr = cmd.Run()
 			return runErr
 		})
+		combined := strings.ToLower(stderr.String() + stdout.String())
 		logSubprocessBuffer("warp-cli", "stdout", &stdout, logger)
 		logSubprocessBuffer("warp-cli", "stderr", &stderr, logger)
 		if err == nil && runErr == nil {
 			logger.Info("warp-cli registration ok")
 			return nil
 		}
-		combined := strings.ToLower(stderr.String() + stdout.String())
 		if strings.Contains(combined, "already registered") ||
-			strings.Contains(combined, "registration already") {
+			strings.Contains(combined, "registration already") ||
+			strings.Contains(combined, "old registration is still around") {
 			logger.Info("warp-cli registration already present")
 			return nil
 		}
